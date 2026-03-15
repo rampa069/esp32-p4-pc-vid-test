@@ -212,6 +212,19 @@ static void edid_select_mode(const uint8_t *e)
             continue;
         }
 
+        /* Skip interlaced/half-frame modes: vact not multiple of 8,
+         * or suspicious aspect (1920x540 is 1080i half-frame) */
+        if (vact & 7) {
+            ESP_LOGI(TAG, "  DTD[%d] %dx%d — vact no múltiplo de 8, posible entrelazado, saltando",
+                     i, hact, vact);
+            continue;
+        }
+        /* 1920x540 specifically: looks like 1080i/2, skip */
+        if (hact == 1920 && vact == 540) {
+            ESP_LOGI(TAG, "  DTD[%d] 1920x540 — modo entrelazado 1080i, saltando", i);
+            continue;
+        }
+
         uint32_t pixels = (uint32_t)hact * vact;
         if (pixels > best_pixels) {
             best_pixels = pixels;
