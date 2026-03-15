@@ -25,6 +25,7 @@
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_mipi_dsi.h"
 #include "nvs_flash.h"
+#include "esp_system.h"
 
 static const char *TAG = "colorbars";
 
@@ -492,7 +493,9 @@ static esp_err_t lt8912b_lvds_config(void)
     lt_write(m, 0x52, 0x04); lt_write(m, 0x69, 0x0E);
     lt_write(m, 0x69, 0x8E); lt_write(m, 0x6A, 0x00);
     lt_write(m, 0x6C, 0xB8); lt_write(m, 0x6B, 0x51);
-    lt_write(m, 0x04, 0xFB); lt_write(m, 0x04, 0xFF);
+    /* 0x04 bit1 = AVMUTE. Pulse low (0xF9) then set to 0xFD (AVMUTE=0).
+     * Original 0xFB->0xFF had AVMUTE=1 which silences HDMI output. */
+    lt_write(m, 0x04, 0xF9); lt_write(m, 0x04, 0xFD);
     lt_write(m, 0x7F, 0x00); lt_write(m, 0xA8, 0x13);
     lt_write(m, 0x02, 0xF7); lt_write(m, 0x02, 0xFF);
     lt_write(m, 0x03, 0xCF); lt_write(m, 0x03, 0xFF);
@@ -700,12 +703,24 @@ void app_main(void)
         lt_read(s_dev_main, 0xC1, &c1);
         bool connected = !!(c1 & 0x80);
         if (connected && !was_connected) {
-            ESP_LOGI(TAG, "HPD: monitor reconectado — reinicializando");
-            /* Re-read EDID and reinit with potentially different mode */
+            ESP_LOGI(TAG, "HPD: monitor reconectado");
+            vTaskDelay(pdMS_TO_TICKS(500));  /* wait for monitor DDC ready */
+            video_timing_t prev = s_timing;
             if (edid_read(edid)) {
                 edid_dump(edid);
                 edid_select_mode(edid);
             }
+            /* If mode changed, restart — DPI cannot be reconfigured at runtime */
+            if (s_timing.hact != prev.hact || s_timing.vact != prev.vact ||
+                s_timing.pclk_khz != prev.pclk_khz) {
+                ESP_LOGI(TAG, "Modo cambiado %dx%d -> %dx%d — reiniciando sistema",
+                         prev.hact, prev.vact, s_timing.hact, s_timing.vact);
+                vTaskDelay(pdMS_TO_TICKS(500));
+                esp_restart();
+            }
+            /* Same mode — just reinit LT8912B */
+            ESP_LOGI(TAG, "Mismo modo %dx%d — reinit LT8912B",
+                     s_timing.hact, s_timing.vact);
             lt8912b_init_config();
             lt8912b_mipi_basic();
             lt8912b_video_timing();
