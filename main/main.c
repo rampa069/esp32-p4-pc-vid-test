@@ -372,7 +372,7 @@ static esp_err_t lt8912b_init_config(void)
     lt_write(m, 0x44, 0x31); lt_write(m, 0x55, 0x44);
     lt_write(m, 0x57, 0x01); lt_write(m, 0x5A, 0x02);
     lt_write(m, 0x3E, 0xD6); lt_write(m, 0x3F, 0xD4); lt_write(m, 0x41, 0x3C);
-    lt_write(m, 0xB2, 0x01);  /* HDMI mode */
+    lt_write(m, 0xB2, 0x00);  /* DVI default — set to HDMI in video_timing */
     return ESP_OK;
 }
 
@@ -447,9 +447,9 @@ static esp_err_t lt8912b_dds_config(void)
 {
     i2c_master_dev_handle_t d = s_dev_cec;
 
-    /* DDS freq word — formula: pclk * 0x16C16, with 0.25MHz precision */
-    uint32_t pclk_q = (s_timing.pclk_khz + 124) / 250;
-    uint32_t dds    = (pclk_q * 0x16C16u) / 4;
+    /* DDS freq word — Linux kernel fixed values (SamCoupe production).
+     * Same value for all resolutions. Works empirically on all monitors. */
+    uint32_t dds = (0x69u << 16) | (0x56u << 8) | 0xFFu;  /* 0x6956FF */
     ESP_LOGI(TAG, "DDS: pclk=%.3fMHz word=0x%06lX [0x%02X,0x%02X,0x%02X]",
              (float)s_timing.pclk_khz/1000.0f,
              (unsigned long)dds,
@@ -493,9 +493,7 @@ static esp_err_t lt8912b_lvds_config(void)
     lt_write(m, 0x52, 0x04); lt_write(m, 0x69, 0x0E);
     lt_write(m, 0x69, 0x8E); lt_write(m, 0x6A, 0x00);
     lt_write(m, 0x6C, 0xB8); lt_write(m, 0x6B, 0x51);
-    /* 0x04 bit1 = AVMUTE. Pulse low (0xF9) then set to 0xFD (AVMUTE=0).
-     * Original 0xFB->0xFF had AVMUTE=1 which silences HDMI output. */
-    lt_write(m, 0x04, 0xF9); lt_write(m, 0x04, 0xFD);
+    lt_write(m, 0x04, 0xFB); lt_write(m, 0x04, 0xFF);  /* PLL reset pulse */
     lt_write(m, 0x7F, 0x00); lt_write(m, 0xA8, 0x13);
     lt_write(m, 0x02, 0xF7); lt_write(m, 0x02, 0xFF);
     lt_write(m, 0x03, 0xCF); lt_write(m, 0x03, 0xFF);
@@ -671,25 +669,6 @@ void app_main(void)
     lt8912b_dds_config();
     lt8912b_rxlogicres();
     lt8912b_lvds_config();
-
-    /* Clear AV mute — some monitors see C6 bit1 (video mute) after init.
-     * The LT8912B sets AVMUTE in the HDMI GCP packet during init.
-     * Clear it by writing the AVMUTE clear command (0xC1 on CEC address). */
-    vTaskDelay(pdMS_TO_TICKS(100));
-    lt_write(s_dev_audio, 0x3C, 0x41);  /* re-enable AVI infoframe */
-    /* Read and clear C6 mute bit via soft-reset of HDMI TX */
-    {
-        uint8_t c6 = 0;
-        lt_read(s_dev_main, 0xC6, &c6);
-        if (c6 & 0x02) {
-            ESP_LOGW(TAG, "C6=0x%02x VMUTE activo — forzando clear", c6);
-            /* Toggle HDMI output to clear mute state */
-            lt_write(s_dev_main, 0x33, 0x0E);
-            lt_write(s_dev_main, 0xB2, 0x01);
-            lt8912b_rxlogicres();
-            vTaskDelay(pdMS_TO_TICKS(100));
-        }
-    }
 
     vTaskDelay(pdMS_TO_TICKS(200));
     lt8912b_status();
