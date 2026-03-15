@@ -1,0 +1,71 @@
+# sdkconfig.defaults — ESP32-P4 HDMI color bars demo
+# Olimex ESP32-P4 board + IDF 5.5.x
+#
+# Estas son las elecciones reales del proyecto. Con este archivo,
+# borrar sdkconfig y ejecutar "idf.py reconfigure" reconstruye
+# la configuración correcta sin destruir nada critico.
+#
+# NO incluir: CONFIG_SOC_*, CONFIG_IDF_*, CONFIG_ESP_ROM_*
+# (esos los genera IDF automaticamente segun el target).
+
+# ── Target ──────────────────────────────────────────────────────────
+CONFIG_IDF_TARGET="esp32p4"
+
+# ── Flash ────────────────────────────────────────────────────────────
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+
+# ── Partition table ──────────────────────────────────────────────────
+# Usar tabla personalizada (partitions.csv en raiz del proyecto)
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# ── FreeRTOS ─────────────────────────────────────────────────────────
+CONFIG_FREERTOS_HZ=1000
+
+# ── Logging ──────────────────────────────────────────────────────────
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# ── Main task stack ──────────────────────────────────────────────────
+# El BSP y LVGL necesitan stack generoso
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=12288
+
+# ── Task watchdog ────────────────────────────────────────────────────
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=5
+
+# ── BSP — Display HDMI (LT8912B, MIPI DSI → HDMI) ───────────────────
+# Color format: RGB888 (24-bit, requerido por LT8912B con LVGL v9)
+CONFIG_BSP_LCD_COLOR_FORMAT_RGB888=y
+# Usar DMA2D para acelerar el render (ESP32-P4 tiene DMA2D HW)
+CONFIG_BSP_LCD_USE_DMA2D=y
+# Tipo de LCD: HDMI (no MIPI DSI directo)
+CONFIG_BSP_LCD_TYPE_HDMI=y
+# Resolucion: 1280x720 @ 60 Hz
+CONFIG_BSP_LCD_HDMI_1280x720_60HZ=y
+# Dos frame buffers — evita que LVGL escriba mientras el DPI lee
+# Con 1 buffer en rev v1.0 el monitor no sincroniza (señal corrupta)
+CONFIG_BSP_LCD_DPI_BUFFER_NUMS=2
+# I2C del BSP (canal 1, 400 kHz — para touch GT911 y LT8912B config)
+CONFIG_BSP_I2C_NUM=1
+CONFIG_BSP_I2C_FAST_MODE=y
+
+# ── LVGL ─────────────────────────────────────────────────────────────
+# Profundidad de color: 24 bits (RGB888, coincide con BSP_LCD_COLOR_FORMAT_RGB888)
+# Es un choice en Kconfig — hay que seleccionar la opción, no el int
+CONFIG_LV_COLOR_DEPTH_24=y
+
+# ── PSRAM ────────────────────────────────────────────────────────────
+# El frame buffer DPI para 1280x720 RGB888 = 2.7MB — no cabe en SRAM.
+# El ESP32-P4 tiene PSRAM HEX (16-line). Rev v1.x soporta hasta 200MHz.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_HEX=y
+CONFIG_SPIRAM_SPEED_200M=y
+
+# ── Chip revision ────────────────────────────────────────────────────
+# La placa Olimex tiene ESP32-P4 rev v1.0 (no v3.x)
+# ESP32P4_SELECTS_REV_LESS_V3 habilita las opciones de revision <3.0
+# y permite seleccionar REV_MIN_100 (= v1.0)
+# Sin esto el bootloader rechaza flashear: "chip revision out of range"
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_100=y
