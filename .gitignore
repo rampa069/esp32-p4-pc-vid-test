@@ -4,6 +4,14 @@ build/
 managed_components/
 backup/
 
+# Los test_apps tienen paths relativos que rompen builds externos
+components/esp-bsp/components/*/test_apps/
+components/esp-bsp/components/*/test/
+components/esp-bsp/components/*/*/test_apps/
+components/esp-bsp/components/*/*/test/
+components/esp-bsp/bsp/*/test_apps/
+components/esp-bsp/examples/
+
 # Solo queremos el BSP del P4 y el driver LT8912B, no todos los BSPs
 components/esp-bsp/bsp/esp-box*/
 components/esp-bsp/bsp/esp32_azure*/
