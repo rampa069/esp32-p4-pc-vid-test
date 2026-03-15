@@ -175,40 +175,29 @@ static void edid_dump(const uint8_t *e)
 }
 
 /* ------------------------------------------------------------------ *
- *  CEA-861 mandatory progressive modes table                          *
- *  All HDMI 1.4 receivers MUST support these.                         *
- *  Ordered by preference (best first).                                *
+ *  CEA-861 720p substitute for interlaced modes                       *
  * ------------------------------------------------------------------ */
-static const video_timing_t k_cea_modes[] = {
-    /* VIC4:  1280x720@60Hz   pclk=74.25MHz — HDMI mandatory for TVs */
-    { .hact=1280,.hs=40, .hfp=110,.hbp=220,.htotal=1650,
-      .vact=720, .vs=5,  .vfp=5,  .vbp=20, .vtotal=750,
-      .pclk_khz=74250, .vic=4,  .aspect_16_9=1 },
-    /* VESA 1024x768@60Hz  pclk=65MHz — universal for PC monitors */
-    { .hact=1024,.hs=136,.hfp=24, .hbp=160,.htotal=1344,
-      .vact=768, .vs=6,  .vfp=3,  .vbp=29, .vtotal=806,
-      .pclk_khz=65000, .vic=0,  .aspect_16_9=0 },
-    /* VIC1:  640x480@60Hz   pclk=25.175MHz — universal fallback */
-    { .hact=640, .hs=96,.hfp=16, .hbp=48, .htotal=800,
-      .vact=480, .vs=2, .vfp=10, .vbp=33, .vtotal=525,
-      .pclk_khz=25175, .vic=1,  .aspect_16_9=0 },
+static const video_timing_t k_cea_720p = {
+    .hact=1280,.hs=40,.hfp=110,.hbp=220,.htotal=1650,
+    .vact=720, .vs=5, .vfp=5,  .vbp=20, .vtotal=750,
+    .pclk_khz=74250, .vic=4, .aspect_16_9=1
 };
-#define NUM_CEA_MODES  (sizeof(k_cea_modes)/sizeof(k_cea_modes[0]))
 
 /* ------------------------------------------------------------------ *
  *  EDID — select best timing compatible with ESP32-P4 PHY             *
  *                                                                      *
  *  Priority:                                                           *
- *   1. DTD progressive entries (higher res = better, pclk fits PHY)   *
- *   2. DTD interlaced → substitute with CEA progressive equivalent    *
- *   3. CEA mandatory modes (VIC4=720p, VIC1=480p) — always supported  *
- *   4. Established timings (800x600, 640x480)                         *
+ *   1. DTD progressive (pclk in PHY range) — use EDID timings exactly *
+ *   2. DTD interlaced → CEA 720p substitute (same pclk)               *
+ *   3. Established timings: 800x600, 640x480                          *
+ *   4. Fallback 640x480                                                *
+ *                                                                      *
+ *  NO inference from range descriptor — too unreliable.               *
  * ------------------------------------------------------------------ */
 static void edid_select_mode(const uint8_t *e)
 {
     video_timing_t best = {0};
     uint32_t best_pixels = 0;
-    bool best_is_cea = false;
 
     /* --- Scan DTD blocks --- */
     for (int i = 0; i < 4; i++) {
@@ -229,46 +218,31 @@ static void edid_select_mode(const uint8_t *e)
         uint32_t pclk_khz = (uint32_t)pclk_10khz * 10;
         uint32_t pclk_mhz = pclk_khz / 1000;
 
-        /* Check PHY limits */
         if (pclk_mhz < PHY_MIN_PCLK_MHZ || pclk_mhz > PHY_MAX_PCLK_MHZ) {
-            ESP_LOGI(TAG, "  DTD[%d] %dx%d pclk=%luMHz — fuera de rango PHY, saltando",
+            ESP_LOGI(TAG, "  DTD[%d] %dx%d pclk=%luMHz — fuera de rango PHY",
                      i, hact, vact, (unsigned long)pclk_mhz);
             continue;
         }
 
-        /* Detect interlaced/half-frame modes */
+        /* Interlaced: substitute with CEA 720p if pclk matches */
         bool interlaced = (vact & 7) || (hact == 1920 && vact == 540);
         if (interlaced) {
-            /* Instead of skipping, find CEA progressive equivalent by pclk.
-             * e.g. 1920x540i@74.25MHz -> 1280x720p@74.25MHz (same pclk,
-             * both are HDMI mandatory modes at that clock rate) */
-            const video_timing_t *cea_sub = NULL;
-            for (size_t j = 0; j < NUM_CEA_MODES; j++) {
-                uint32_t cea_pclk_range = k_cea_modes[j].pclk_khz * 5 / 100; /* 5% tolerance */
-                if (pclk_khz >= k_cea_modes[j].pclk_khz - cea_pclk_range &&
-                    pclk_khz <= k_cea_modes[j].pclk_khz + cea_pclk_range) {
-                    cea_sub = &k_cea_modes[j];
-                    break;
-                }
-            }
-            if (cea_sub) {
-                ESP_LOGI(TAG, "  DTD[%d] %dx%d entrelazado@%luMHz -> CEA sustituto: %dx%d VIC%d",
-                         i, hact, vact, (unsigned long)pclk_mhz,
-                         cea_sub->hact, cea_sub->vact, cea_sub->vic);
-                uint32_t pixels = (uint32_t)cea_sub->hact * cea_sub->vact;
-                if (pixels > best_pixels || (!best_is_cea && pixels >= best_pixels)) {
-                    best_pixels = pixels;
-                    best = *cea_sub;
-                    best_is_cea = true;
+            uint32_t r = k_cea_720p.pclk_khz * 5 / 100;
+            if (pclk_khz >= k_cea_720p.pclk_khz - r &&
+                pclk_khz <= k_cea_720p.pclk_khz + r) {
+                uint32_t px = k_cea_720p.hact * k_cea_720p.vact;
+                if (px > best_pixels) {
+                    best = k_cea_720p;
+                    best_pixels = px;
+                    ESP_LOGI(TAG, "  DTD[%d] %dx%d interlazado -> CEA 720p", i, hact, vact);
                 }
             } else {
-                ESP_LOGI(TAG, "  DTD[%d] %dx%d entrelazado — sin sustituto CEA, saltando",
-                         i, hact, vact);
+                ESP_LOGI(TAG, "  DTD[%d] %dx%d interlazado sin sustituto, saltando", i, hact, vact);
             }
-            continue;  /* interlaced handled above, skip progressive path */
+            continue;
         }
 
-        /* Progressive mode — use DTD timings directly */
+        /* Progressive */
         uint32_t pixels = (uint32_t)hact * vact;
         if (pixels > best_pixels) {
             best_pixels = pixels;
@@ -279,91 +253,36 @@ static void edid_select_mode(const uint8_t *e)
             best.pclk_khz=pclk_khz;
             best.aspect_16_9 = (hact * 10 / (vact ? vact : 1) > 14) ? 1 : 0;
             best.vic = 0;
-            best_is_cea = false;
-            ESP_LOGI(TAG, "  DTD[%d] %dx%d@%luMHz — candidato progresivo",
-                     i, hact, vact, (unsigned long)pclk_mhz);
+            ESP_LOGI(TAG, "  DTD[%d] %dx%d@%luMHz — candidato", i, hact, vact, (unsigned long)pclk_mhz);
         }
     }
 
-    /* --- CEA mandatory modes fallback ---
-     * If no DTD progressive mode found, try CEA mandatory modes.
-     * All HDMI 1.4 TVs must support VIC4 (720p) and VIC1 (480p).
-     * We check if the monitor's range descriptor covers these modes. */
+    /* --- Established timings — only if no DTD fit --- */
     if (best_pixels == 0) {
-        /* Read range descriptor: bytes [05]=Vmin [06]=Vmax [07]=Hmin [08]=Hmax [09]=pclk_max/10 */
-        uint8_t vmin=0, vmax=0, hmin=0, hmax=0, pmax_10mhz=0;
-        for (int i = 0; i < 4; i++) {
-            const uint8_t *d = e + 54 + i*18;
-            if (!d[0] && !d[1] && d[3]==0xfd) {
-                vmin=d[5]; vmax=d[6]; hmin=d[7]; hmax=d[8]; pmax_10mhz=d[9];
-                break;
-            }
-        }
-        ESP_LOGI(TAG, "  Range: V=%d-%dHz H=%d-%dKHz pclk_max=%dMHz",
-                 vmin, vmax, hmin, hmax, pmax_10mhz*10);
-
-        /* If monitor explicitly declares 1024x768@60Hz in established timings,
-         * it is a PC monitor — prefer VESA 1024x768 over CEA 720p */
-        bool prefer_1024 = (e[36] & 0x08) != 0;
-        if (prefer_1024)
-            ESP_LOGI(TAG, "  Monitor declara 1024x768 — modo PC, priorizando VESA");
-
-        for (size_t j = 0; j < NUM_CEA_MODES; j++) {
-            const video_timing_t *m = &k_cea_modes[j];
-            /* Skip 720p (VIC4) if monitor prefers PC modes */
-            if (prefer_1024 && m->vic == 4) {
-                ESP_LOGI(TAG, "  Saltando VIC4 720p (monitor PC)");
-                continue;
-            }
-            uint32_t pm = m->pclk_khz / 1000;
-            uint32_t htotal = m->htotal, vtotal = m->vtotal;
-            uint32_t fps    = m->pclk_khz * 1000 / htotal / vtotal;
-            uint32_t hrate  = m->pclk_khz / htotal; /* KHz */
-            bool in_range = (!vmin || (fps >= vmin && fps <= vmax)) &&
-                            (!hmin || (hrate >= (uint32_t)hmin && hrate <= (uint32_t)hmax)) &&
-                            (!pmax_10mhz || pm <= (uint32_t)pmax_10mhz*10);
-            ESP_LOGI(TAG, "  %s %dx%d@%luHz H=%luKHz pclk=%luMHz — %s",
-                     m->vic ? "CEA" : "VESA",
-                     m->hact, m->vact, (unsigned long)fps,
-                     (unsigned long)hrate, (unsigned long)pm,
-                     in_range ? "en rango" : "fuera de rango monitor");
-            if (in_range) {
-                best = *m;
-                best_pixels = (uint32_t)m->hact * m->vact;
-                ESP_LOGI(TAG, "  -> Seleccionado %dx%d VIC%d", m->hact, m->vact, m->vic);
-                break;
-            }
-        }
-    }
-
-    /* --- Last resort: established timings --- */
-    if (best_pixels == 0) {
-        if (e[35] & 0x01) {
-            ESP_LOGI(TAG, "  Usando established timing: 800x600@60Hz");
+        if (e[35] & 0x20) {
+            ESP_LOGI(TAG, "  Usando: 640x480@60Hz (established)");
+            best = k_fallback;
+            best_pixels = 640*480;
+        } else if (e[35] & 0x01) {
+            ESP_LOGI(TAG, "  Usando: 800x600@60Hz (established)");
             best = (video_timing_t){
                 .hact=800,.hs=128,.hfp=40,.hbp=88,.htotal=1056,
                 .vact=600,.vs=4,  .vfp=1, .vbp=23,.vtotal=628,
                 .pclk_khz=40000,.vic=0,.aspect_16_9=0
             };
             best_pixels = 800*600;
-        } else if (e[35] & 0x20) {
-            ESP_LOGI(TAG, "  Usando established timing: 640x480@60Hz");
-            best = k_fallback;
-            best_pixels = 640*480;
         }
     }
 
     if (best_pixels == 0) {
-        ESP_LOGW(TAG, "Ningun modo EDID compatible — usando fallback 640x480");
+        ESP_LOGW(TAG, "Sin modo EDID compatible — fallback 640x480");
         s_timing = k_fallback;
     } else {
         s_timing = best;
-        /* Assign VIC and aspect for known CEA modes */
-        if (s_timing.hact==640  && s_timing.vact==480)  { s_timing.vic=1;  s_timing.aspect_16_9=0; }
-        if (s_timing.hact==720  && s_timing.vact==480)  { s_timing.vic=2;  s_timing.aspect_16_9=0; }
-        if (s_timing.hact==1280 && s_timing.vact==720)  { s_timing.vic=4;  s_timing.aspect_16_9=1; }
-        if (s_timing.hact==1920 && s_timing.vact==1080) { s_timing.vic=16; s_timing.aspect_16_9=1; }
-        if (s_timing.hact==800  && s_timing.vact==600)  { s_timing.vic=0;  s_timing.aspect_16_9=0; }
+        if (s_timing.hact==640  && s_timing.vact==480)  { s_timing.vic=1; s_timing.aspect_16_9=0; }
+        if (s_timing.hact==720  && s_timing.vact==480)  { s_timing.vic=2; s_timing.aspect_16_9=0; }
+        if (s_timing.hact==1280 && s_timing.vact==720)  { s_timing.vic=4; s_timing.aspect_16_9=1; }
+        if (s_timing.hact==1920 && s_timing.vact==1080) { s_timing.vic=16;s_timing.aspect_16_9=1; }
     }
 
     ESP_LOGI(TAG, "Modo seleccionado: %dx%d pclk=%luKHz htotal=%d vtotal=%d VIC=%d",
