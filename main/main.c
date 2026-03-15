@@ -25,7 +25,6 @@
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_mipi_dsi.h"
 #include "nvs_flash.h"
-#include "esp_system.h"
 
 static const char *TAG = "colorbars";
 
@@ -64,10 +63,7 @@ typedef struct {
 static const video_timing_t k_fallback = {
     .hact=640, .hs=96, .hfp=16, .hbp=48, .htotal=800,
     .vact=480, .vs=2,  .vfp=10, .vbp=33, .vtotal=525,
-    /* 25MHz integer — ESP32-P4 DPI PLL generates exact 25MHz.
-     * 25.175 is the CEA spec but the PLL cannot hit it exactly.
-     * 25000 / (800*525) = 59.52 Hz — within monitor range. */
-    .pclk_khz=25000, .vic=1, .aspect_16_9=0,
+    .pclk_khz=25175, .vic=1, .aspect_16_9=0,
 };
 
 static video_timing_t s_timing;  /* chosen timing */
@@ -178,24 +174,12 @@ static void edid_dump(const uint8_t *e)
 }
 
 /* ------------------------------------------------------------------ *
- *  CEA-861 720p substitute for interlaced modes                       *
- * ------------------------------------------------------------------ */
-static const video_timing_t k_cea_720p = {
-    .hact=1280,.hs=40,.hfp=110,.hbp=220,.htotal=1650,
-    .vact=720, .vs=5, .vfp=5,  .vbp=20, .vtotal=750,
-    .pclk_khz=74250, .vic=4, .aspect_16_9=1
-};
-
-/* ------------------------------------------------------------------ *
  *  EDID — select best timing compatible with ESP32-P4 PHY             *
  *                                                                      *
  *  Priority:                                                           *
- *   1. DTD progressive (pclk in PHY range) — use EDID timings exactly *
- *   2. DTD interlaced → CEA 720p substitute (same pclk)               *
- *   3. Established timings: 800x600, 640x480                          *
- *   4. Fallback 640x480                                                *
- *                                                                      *
- *  NO inference from range descriptor — too unreliable.               *
+ *   1. DTD entries (higher resolution = better, if pclk fits PHY)     *
+ *   2. Known CEA modes from established timings                        *
+ *   3. Fallback 640x480                                                *
  * ------------------------------------------------------------------ */
 static void edid_select_mode(const uint8_t *e)
 {
@@ -221,31 +205,26 @@ static void edid_select_mode(const uint8_t *e)
         uint32_t pclk_khz = (uint32_t)pclk_10khz * 10;
         uint32_t pclk_mhz = pclk_khz / 1000;
 
+        /* Check PHY limits */
         if (pclk_mhz < PHY_MIN_PCLK_MHZ || pclk_mhz > PHY_MAX_PCLK_MHZ) {
-            ESP_LOGI(TAG, "  DTD[%d] %dx%d pclk=%luMHz — fuera de rango PHY",
+            ESP_LOGI(TAG, "  DTD[%d] %dx%d pclk=%luMHz — fuera de rango PHY, saltando",
                      i, hact, vact, (unsigned long)pclk_mhz);
             continue;
         }
 
-        /* Interlaced: substitute with CEA 720p if pclk matches */
-        bool interlaced = (vact & 7) || (hact == 1920 && vact == 540);
-        if (interlaced) {
-            uint32_t r = k_cea_720p.pclk_khz * 5 / 100;
-            if (pclk_khz >= k_cea_720p.pclk_khz - r &&
-                pclk_khz <= k_cea_720p.pclk_khz + r) {
-                uint32_t px = k_cea_720p.hact * k_cea_720p.vact;
-                if (px > best_pixels) {
-                    best = k_cea_720p;
-                    best_pixels = px;
-                    ESP_LOGI(TAG, "  DTD[%d] %dx%d interlazado -> CEA 720p", i, hact, vact);
-                }
-            } else {
-                ESP_LOGI(TAG, "  DTD[%d] %dx%d interlazado sin sustituto, saltando", i, hact, vact);
-            }
+        /* Skip interlaced/half-frame modes: vact not multiple of 8,
+         * or suspicious aspect (1920x540 is 1080i half-frame) */
+        if (vact & 7) {
+            ESP_LOGI(TAG, "  DTD[%d] %dx%d — vact no múltiplo de 8, posible entrelazado, saltando",
+                     i, hact, vact);
+            continue;
+        }
+        /* 1920x540 specifically: looks like 1080i/2, skip */
+        if (hact == 1920 && vact == 540) {
+            ESP_LOGI(TAG, "  DTD[%d] 1920x540 — modo entrelazado 1080i, saltando", i);
             continue;
         }
 
-        /* Progressive */
         uint32_t pixels = (uint32_t)hact * vact;
         if (pixels > best_pixels) {
             best_pixels = pixels;
@@ -254,38 +233,45 @@ static void edid_select_mode(const uint8_t *e)
             best.vact=vact; best.vtotal=vact+vblnk;
             best.vs=vpw;    best.vfp=vfp; best.vbp=vbp;
             best.pclk_khz=pclk_khz;
-            best.aspect_16_9 = (hact * 10 / (vact ? vact : 1) > 14) ? 1 : 0;
-            best.vic = 0;
-            ESP_LOGI(TAG, "  DTD[%d] %dx%d@%luMHz — candidato", i, hact, vact, (unsigned long)pclk_mhz);
+            /* Aspect from image size: width/height > 1.4 => 16:9 */
+        best.aspect_16_9 = (hact * 10 / (vact ? vact : 1) > 14) ? 1 : 0;
+            best.vic = 0;  /* unknown CEA VIC for custom modes */
+            ESP_LOGI(TAG, "  DTD[%d] %dx%d@%luMHz — candidato",
+                     i, hact, vact, (unsigned long)pclk_mhz);
         }
     }
 
-    /* --- Established timings — only if no DTD fit --- */
+    /* --- Established timings fallback (CEA known modes) ---
+     * Only used if no DTD fitted the PHY */
     if (best_pixels == 0) {
-        if (e[35] & 0x20) {
-            ESP_LOGI(TAG, "  Usando: 640x480@60Hz (established)");
-            best = k_fallback;
-            best_pixels = 640*480;
-        } else if (e[35] & 0x01) {
-            ESP_LOGI(TAG, "  Usando: 800x600@60Hz (established)");
+        /* 1024x768@60Hz: pclk=65MHz -> over limit, skip */
+        /* 800x600@60Hz:  pclk=40MHz -> fits */
+        if (e[35] & 0x01) {  /* 800x600@60Hz */
+            ESP_LOGI(TAG, "  Usando established timing: 800x600@60Hz");
             best = (video_timing_t){
                 .hact=800,.hs=128,.hfp=40,.hbp=88,.htotal=1056,
                 .vact=600,.vs=4,  .vfp=1, .vbp=23,.vtotal=628,
                 .pclk_khz=40000,.vic=0,.aspect_16_9=0
             };
             best_pixels = 800*600;
+        } else if (e[35] & 0x20) {  /* 640x480@60Hz */
+            ESP_LOGI(TAG, "  Usando established timing: 640x480@60Hz");
+            best = k_fallback;
+            best_pixels = 640*480;
         }
     }
 
     if (best_pixels == 0) {
-        ESP_LOGW(TAG, "Sin modo EDID compatible — fallback 640x480");
+        ESP_LOGW(TAG, "Ningun modo EDID compatible — usando fallback 640x480");
         s_timing = k_fallback;
     } else {
         s_timing = best;
-        if (s_timing.hact==640  && s_timing.vact==480)  { s_timing.vic=1; s_timing.aspect_16_9=0; }
-        if (s_timing.hact==720  && s_timing.vact==480)  { s_timing.vic=2; s_timing.aspect_16_9=0; }
-        if (s_timing.hact==1280 && s_timing.vact==720)  { s_timing.vic=4; s_timing.aspect_16_9=1; }
-        if (s_timing.hact==1920 && s_timing.vact==1080) { s_timing.vic=16;s_timing.aspect_16_9=1; }
+        /* Assign VIC and aspect for known CEA modes */
+        if (s_timing.hact==640  && s_timing.vact==480)  { s_timing.vic=1;  s_timing.aspect_16_9=0; }
+        if (s_timing.hact==720  && s_timing.vact==480)  { s_timing.vic=2;  s_timing.aspect_16_9=0; }
+        if (s_timing.hact==1280 && s_timing.vact==720)  { s_timing.vic=4;  s_timing.aspect_16_9=1; }
+        if (s_timing.hact==1920 && s_timing.vact==1080) { s_timing.vic=16; s_timing.aspect_16_9=1; }
+        if (s_timing.hact==800  && s_timing.vact==600)  { s_timing.vic=0;  s_timing.aspect_16_9=0; }
     }
 
     ESP_LOGI(TAG, "Modo seleccionado: %dx%d pclk=%luKHz htotal=%d vtotal=%d VIC=%d",
@@ -309,7 +295,7 @@ static esp_err_t lt8912b_init_config(void)
     lt_write(m, 0x44, 0x31); lt_write(m, 0x55, 0x44);
     lt_write(m, 0x57, 0x01); lt_write(m, 0x5A, 0x02);
     lt_write(m, 0x3E, 0xD6); lt_write(m, 0x3F, 0xD4); lt_write(m, 0x41, 0x3C);
-    lt_write(m, 0xB2, 0x00);  /* DVI default — set to HDMI in video_timing */
+    lt_write(m, 0xB2, 0x01);  /* HDMI mode */
     return ESP_OK;
 }
 
@@ -355,24 +341,13 @@ static esp_err_t lt8912b_video_timing(void)
     lt_write(d, 0x3A, t->vfp & 0xFF); lt_write(d, 0x3B, t->vfp >> 8);
     lt_write(d, 0x3C, t->hbp & 0xFF); lt_write(d, 0x3D, t->hbp >> 8);
     lt_write(d, 0x3E, t->hfp & 0xFF); lt_write(d, 0x3F, t->hfp >> 8);
-    lt_write(m, 0xAB, 0x00);
-    /* HDMI mode only for CEA modes (VIC>0). VESA modes use DVI (0x00).
-     * PC monitors reject VESA modes sent as HDMI with AVI InfoFrame. */
-    uint8_t hdmi_mode = (s_timing.vic > 0) ? 0x01 : 0x00;
-    lt_write(m, 0xB2, hdmi_mode);
-    ESP_LOGI(TAG, "0xB2=0x%02x (%s mode, VIC=%d)",
-             hdmi_mode, hdmi_mode ? "HDMI" : "DVI", s_timing.vic);
+    lt_write(m, 0xAB, 0x00);   /* polarities: both negative for 640x480 */
+    lt_write(m, 0xB2, 0x01);   /* HDMI mode */
     return ESP_OK;
 }
 
 static esp_err_t lt8912b_avi_infoframe(void)
 {
-    /* VESA modes (VIC=0) use DVI — no AVI InfoFrame needed/wanted.
-     * PC monitors may reject VESA modes with AVI InfoFrame. */
-    if (s_timing.vic == 0) {
-        ESP_LOGI(TAG, "AVI: skipped (DVI/VESA mode, VIC=0)");
-        return ESP_OK;
-    }
     i2c_master_dev_handle_t a = s_dev_audio;
     uint8_t vic    = s_timing.vic;
     uint8_t aspect = s_timing.aspect_16_9 ? 2 : 1;  /* 2=16:9, 1=4:3 */
@@ -395,14 +370,17 @@ static esp_err_t lt8912b_dds_config(void)
 {
     i2c_master_dev_handle_t d = s_dev_cec;
 
-    /* DDS freq word — calculated per pclk: pclk_mhz * 0x16C16
-     * SamCoupe uses fixed 0x6956FF but only has one mode (720p@74.25MHz).
-     * We support multiple modes so we must calculate per resolution.
-     * 0.25MHz precision: dds = (pclk_khz/250) * 0x16C16 / 4 */
-    uint32_t pclk_q = (s_timing.pclk_khz + 124) / 250;
-    uint32_t dds    = (pclk_q * 0x16C16u) / 4;
-    ESP_LOGI(TAG, "DDS: pclk=%.3fMHz word=0x%06lX [0x%02X,0x%02X,0x%02X]",
-             (float)s_timing.pclk_khz/1000.0f,
+    /* DDS freq word — from production SamCoupe for 24MHz pixel clock.
+     * Formula: pclk_mhz * 0x16C16. For other clocks we use same base
+     * table but override the frequency word. */
+    /* Use pclk in units of 0.25MHz for better precision:
+     * DDS = pclk_quarter * 0x16C16 / 4
+     * For 74.25MHz: quarter=297, dds = 297*0x16C16/4 = 0x6B1A63
+     * For 24MHz:    quarter=96,  dds = 96 *0x16C16/4 = 0x238E26 */
+    uint32_t pclk_q   = (s_timing.pclk_khz + 124) / 250;  /* round to nearest 0.25MHz */
+    uint32_t dds      = (pclk_q * 0x16C16u) / 4;
+    ESP_LOGI(TAG, "DDS: pclk=%.3fMHz (q=%lu) word=0x%06lX [0x%02X,0x%02X,0x%02X]",
+             (float)s_timing.pclk_khz/1000.0f, (unsigned long)pclk_q,
              (unsigned long)dds,
              (uint8_t)(dds&0xFF),(uint8_t)((dds>>8)&0xFF),(uint8_t)((dds>>16)&0xFF));
 
@@ -444,7 +422,7 @@ static esp_err_t lt8912b_lvds_config(void)
     lt_write(m, 0x52, 0x04); lt_write(m, 0x69, 0x0E);
     lt_write(m, 0x69, 0x8E); lt_write(m, 0x6A, 0x00);
     lt_write(m, 0x6C, 0xB8); lt_write(m, 0x6B, 0x51);
-    lt_write(m, 0x04, 0xFB); lt_write(m, 0x04, 0xFF);  /* PLL reset pulse */
+    lt_write(m, 0x04, 0xFB); lt_write(m, 0x04, 0xFF);
     lt_write(m, 0x7F, 0x00); lt_write(m, 0xA8, 0x13);
     lt_write(m, 0x02, 0xF7); lt_write(m, 0x02, 0xFF);
     lt_write(m, 0x03, 0xCF); lt_write(m, 0x03, 0xFF);
@@ -460,8 +438,8 @@ static void lt8912b_status(void)
     lt_read(s_dev_main, 0xC6, &c6);
     ESP_LOGI(TAG, "MIPI sync: Hsync=0x%02X%02X Vsync=0x%02X%02X%s",
              h1,h0,v1,v0, (h0||h1||v0||v1)?" — DSI activo":" — SIN señal");
-    ESP_LOGI(TAG, "Status: C0=%02X C1=%02X C6=%02X  HPD=%d CLK=%d PLL=%d VMUTE=%d",
-             c0,c1,c6, !!(c1&0x80), !!(c1&0x40), !!(c6&0x80), !!(c6&0x02));
+    ESP_LOGI(TAG, "Status: C0=%02X C1=%02X C6=%02X  HPD=%d CLK=%d PLL=%d",
+             c0,c1,c6, !!(c1&0x80), !!(c1&0x40), !!(c6&0x80));
 }
 
 /* ------------------------------------------------------------------ *
@@ -633,24 +611,12 @@ void app_main(void)
         lt_read(s_dev_main, 0xC1, &c1);
         bool connected = !!(c1 & 0x80);
         if (connected && !was_connected) {
-            ESP_LOGI(TAG, "HPD: monitor reconectado");
-            vTaskDelay(pdMS_TO_TICKS(500));  /* wait for monitor DDC ready */
-            video_timing_t prev = s_timing;
+            ESP_LOGI(TAG, "HPD: monitor reconectado — reinicializando");
+            /* Re-read EDID and reinit with potentially different mode */
             if (edid_read(edid)) {
                 edid_dump(edid);
                 edid_select_mode(edid);
             }
-            /* If mode changed, restart — DPI cannot be reconfigured at runtime */
-            if (s_timing.hact != prev.hact || s_timing.vact != prev.vact ||
-                s_timing.pclk_khz != prev.pclk_khz) {
-                ESP_LOGI(TAG, "Modo cambiado %dx%d -> %dx%d — reiniciando sistema",
-                         prev.hact, prev.vact, s_timing.hact, s_timing.vact);
-                vTaskDelay(pdMS_TO_TICKS(500));
-                esp_restart();
-            }
-            /* Same mode — just reinit LT8912B */
-            ESP_LOGI(TAG, "Mismo modo %dx%d — reinit LT8912B",
-                     s_timing.hact, s_timing.vact);
             lt8912b_init_config();
             lt8912b_mipi_basic();
             lt8912b_video_timing();
