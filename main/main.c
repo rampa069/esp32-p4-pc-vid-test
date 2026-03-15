@@ -447,9 +447,12 @@ static esp_err_t lt8912b_dds_config(void)
 {
     i2c_master_dev_handle_t d = s_dev_cec;
 
-    /* DDS freq word — Linux kernel fixed values (SamCoupe production).
-     * Same value for all resolutions. Works empirically on all monitors. */
-    uint32_t dds = (0x69u << 16) | (0x56u << 8) | 0xFFu;  /* 0x6956FF */
+    /* DDS freq word — calculated per pclk: pclk_mhz * 0x16C16
+     * SamCoupe uses fixed 0x6956FF but only has one mode (720p@74.25MHz).
+     * We support multiple modes so we must calculate per resolution.
+     * 0.25MHz precision: dds = (pclk_khz/250) * 0x16C16 / 4 */
+    uint32_t pclk_q = (s_timing.pclk_khz + 124) / 250;
+    uint32_t dds    = (pclk_q * 0x16C16u) / 4;
     ESP_LOGI(TAG, "DDS: pclk=%.3fMHz word=0x%06lX [0x%02X,0x%02X,0x%02X]",
              (float)s_timing.pclk_khz/1000.0f,
              (unsigned long)dds,
