@@ -302,8 +302,14 @@ static esp_err_t lt8912b_init_config(void)
 static esp_err_t lt8912b_mipi_basic(void)
 {
     i2c_master_dev_handle_t d = s_dev_cec;
-    uint8_t settle = (s_timing.vact <= 600) ? 0x04 :
-                     (s_timing.vact == 1080) ? 0x0A : 0x08;
+    /* settle depends on lane bit rate, not resolution.
+     * lane_mbps = pclk * 24 / 2:
+     *   pclk <= 25MHz -> ~300 Mbps -> 0x04
+     *   pclk <= 50MHz -> ~600 Mbps -> 0x08
+     *   pclk >  50MHz -> ~900+ Mbps -> 0x0a  (kernel Linux value for 720p/1080p) */
+    uint32_t pclk_mhz_settle = s_timing.pclk_khz / 1000;
+    uint8_t settle = (pclk_mhz_settle <= 25) ? 0x04 :
+                     (pclk_mhz_settle <= 50) ? 0x08 : 0x0a;
     ESP_LOGI(TAG, "settle=0x%02x", settle);
     lt_write(d, 0x10, 0x01);
     lt_write(d, 0x11, settle);
@@ -371,11 +377,11 @@ static esp_err_t lt8912b_dds_config(void)
      * DDS = pclk_quarter * 0x16C16 / 4
      * For 74.25MHz: quarter=297, dds = 297*0x16C16/4 = 0x6B1A63
      * For 24MHz:    quarter=96,  dds = 96 *0x16C16/4 = 0x238E26 */
-    uint32_t pclk_mhz = s_timing.pclk_khz / 1000;
     uint32_t pclk_q   = (s_timing.pclk_khz + 124) / 250;  /* round to nearest 0.25MHz */
     uint32_t dds      = (pclk_q * 0x16C16u) / 4;
-    ESP_LOGI(TAG, "DDS: pclk=%luMHz word=0x%06lX [0x%02X,0x%02X,0x%02X]",
-             (unsigned long)pclk_mhz, (unsigned long)dds,
+    ESP_LOGI(TAG, "DDS: pclk=%.3fMHz (q=%lu) word=0x%06lX [0x%02X,0x%02X,0x%02X]",
+             (float)s_timing.pclk_khz/1000.0f, (unsigned long)pclk_q,
+             (unsigned long)dds,
              (uint8_t)(dds&0xFF),(uint8_t)((dds>>8)&0xFF),(uint8_t)((dds>>16)&0xFF));
 
     lt_write(d, 0x4E, dds & 0xFF);
