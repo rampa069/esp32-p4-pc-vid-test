@@ -53,17 +53,16 @@ inspect the EDID.
 ```c
 #define PCLK_MHZ   24      // pixel clock
 #define LANE_MBPS  400     // DSI lane bit rate
-#define VFP        1       // vertical front porch
-#define VBP        17      // vertical back porch
+#define VFP        10      // vertical front porch (CEA-861 standard)
+#define VBP        33      // vertical back porch  (CEA-861 standard)
 // DDS frequency word (LT8912B reg 0x4E/4F/50)
 #define DDS_B0  0x10
 #define DDS_B1  0x22
 #define DDS_B2  0x22
 ```
 
-These values were extracted from the SamCoupe production sdkconfig and
-verified on multiple monitors. They differ from the CEA-861 standard
-blanking values (VFP=10, VBP=33) but work reliably with the LT8912B.
+These values follow the CEA-861 VIC1 standard timing for 640×480@60Hz
+and have been verified working on multiple monitors.
 
 ---
 

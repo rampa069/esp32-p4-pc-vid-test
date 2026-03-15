@@ -42,10 +42,10 @@ static const char *TAG = "colorbars";
 #define HFP     16
 #define HBP     48
 #define VS       2
-#define VFP      1
-#define VBP     17
+#define VFP     10
+#define VBP     33
 #define HTOTAL  (HACT + HS + HFP + HBP)   /* 800  */
-#define VTOTAL  (VACT + VS + VFP + VBP)    /* 500  */
+#define VTOTAL  (VACT + VS + VFP + VBP)    /* 525 — CEA-861 standard */
 #define PCLK_MHZ  24
 #define LANES      2
 /* Valores exactos de produccion SamCoupe/sdkconfig:
