@@ -433,13 +433,24 @@ static esp_err_t lt8912b_video_timing(void)
     lt_write(d, 0x3A, t->vfp & 0xFF); lt_write(d, 0x3B, t->vfp >> 8);
     lt_write(d, 0x3C, t->hbp & 0xFF); lt_write(d, 0x3D, t->hbp >> 8);
     lt_write(d, 0x3E, t->hfp & 0xFF); lt_write(d, 0x3F, t->hfp >> 8);
-    lt_write(m, 0xAB, 0x00);   /* polarities: both negative for 640x480 */
-    lt_write(m, 0xB2, 0x01);   /* HDMI mode */
+    lt_write(m, 0xAB, 0x00);
+    /* HDMI mode only for CEA modes (VIC>0). VESA modes use DVI (0x00).
+     * PC monitors reject VESA modes sent as HDMI with AVI InfoFrame. */
+    uint8_t hdmi_mode = (s_timing.vic > 0) ? 0x01 : 0x00;
+    lt_write(m, 0xB2, hdmi_mode);
+    ESP_LOGI(TAG, "0xB2=0x%02x (%s mode, VIC=%d)",
+             hdmi_mode, hdmi_mode ? "HDMI" : "DVI", s_timing.vic);
     return ESP_OK;
 }
 
 static esp_err_t lt8912b_avi_infoframe(void)
 {
+    /* VESA modes (VIC=0) use DVI — no AVI InfoFrame needed/wanted.
+     * PC monitors may reject VESA modes with AVI InfoFrame. */
+    if (s_timing.vic == 0) {
+        ESP_LOGI(TAG, "AVI: skipped (DVI/VESA mode, VIC=0)");
+        return ESP_OK;
+    }
     i2c_master_dev_handle_t a = s_dev_audio;
     uint8_t vic    = s_timing.vic;
     uint8_t aspect = s_timing.aspect_16_9 ? 2 : 1;  /* 2=16:9, 1=4:3 */
