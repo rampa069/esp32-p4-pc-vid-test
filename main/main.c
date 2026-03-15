@@ -370,17 +370,23 @@ static esp_err_t lt8912b_dds_config(void)
 {
     i2c_master_dev_handle_t d = s_dev_cec;
 
-    /* DDS freq word — from production SamCoupe for 24MHz pixel clock.
-     * Formula: pclk_mhz * 0x16C16. For other clocks we use same base
-     * table but override the frequency word. */
-    /* Use pclk in units of 0.25MHz for better precision:
-     * DDS = pclk_quarter * 0x16C16 / 4
-     * For 74.25MHz: quarter=297, dds = 297*0x16C16/4 = 0x6B1A63
-     * For 24MHz:    quarter=96,  dds = 96 *0x16C16/4 = 0x238E26 */
-    uint32_t pclk_q   = (s_timing.pclk_khz + 124) / 250;  /* round to nearest 0.25MHz */
-    uint32_t dds      = (pclk_q * 0x16C16u) / 4;
-    ESP_LOGI(TAG, "DDS: pclk=%.3fMHz (q=%lu) word=0x%06lX [0x%02X,0x%02X,0x%02X]",
-             (float)s_timing.pclk_khz/1000.0f, (unsigned long)pclk_q,
+    /* DDS freq word.
+     * The Linux kernel driver uses a fixed value (0x6956FF) for all resolutions
+     * which empirically works. Our formula gives exact values but the LT8912B
+     * internal oscillator may not be at nominal frequency.
+     * We use the Linux fixed value for pclk >= 70MHz (720p/1080p range),
+     * and the formula for lower clocks where it matches production values. */
+    uint32_t dds;
+    if (s_timing.pclk_khz >= 70000) {
+        /* Linux kernel fixed value — empirically stable for 74.25MHz range */
+        dds = 0x6956FF;
+        ESP_LOGI(TAG, "DDS: Linux fixed value 0x6956FF (pclk>=70MHz)");
+    } else {
+        uint32_t pclk_q = (s_timing.pclk_khz + 124) / 250;
+        dds = (pclk_q * 0x16C16u) / 4;
+    }
+    ESP_LOGI(TAG, "DDS: pclk=%.3fMHz word=0x%06lX [0x%02X,0x%02X,0x%02X]",
+             (float)s_timing.pclk_khz/1000.0f,
              (unsigned long)dds,
              (uint8_t)(dds&0xFF),(uint8_t)((dds>>8)&0xFF),(uint8_t)((dds>>16)&0xFF));
 
