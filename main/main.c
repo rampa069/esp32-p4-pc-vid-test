@@ -446,21 +446,9 @@ static esp_err_t lt8912b_dds_config(void)
 {
     i2c_master_dev_handle_t d = s_dev_cec;
 
-    /* DDS freq word.
-     * The Linux kernel driver uses a fixed value (0x6956FF) for all resolutions
-     * which empirically works. Our formula gives exact values but the LT8912B
-     * internal oscillator may not be at nominal frequency.
-     * We use the Linux fixed value for pclk >= 70MHz (720p/1080p range),
-     * and the formula for lower clocks where it matches production values. */
-    uint32_t dds;
-    if (s_timing.pclk_khz >= 70000) {
-        /* Linux kernel fixed value — empirically stable for 74.25MHz range */
-        dds = 0x6956FF;
-        ESP_LOGI(TAG, "DDS: Linux fixed value 0x6956FF (pclk>=70MHz)");
-    } else {
-        uint32_t pclk_q = (s_timing.pclk_khz + 124) / 250;
-        dds = (pclk_q * 0x16C16u) / 4;
-    }
+    /* DDS freq word — formula: pclk * 0x16C16, with 0.25MHz precision */
+    uint32_t pclk_q = (s_timing.pclk_khz + 124) / 250;
+    uint32_t dds    = (pclk_q * 0x16C16u) / 4;
     ESP_LOGI(TAG, "DDS: pclk=%.3fMHz word=0x%06lX [0x%02X,0x%02X,0x%02X]",
              (float)s_timing.pclk_khz/1000.0f,
              (unsigned long)dds,
@@ -520,8 +508,8 @@ static void lt8912b_status(void)
     lt_read(s_dev_main, 0xC6, &c6);
     ESP_LOGI(TAG, "MIPI sync: Hsync=0x%02X%02X Vsync=0x%02X%02X%s",
              h1,h0,v1,v0, (h0||h1||v0||v1)?" — DSI activo":" — SIN señal");
-    ESP_LOGI(TAG, "Status: C0=%02X C1=%02X C6=%02X  HPD=%d CLK=%d PLL=%d",
-             c0,c1,c6, !!(c1&0x80), !!(c1&0x40), !!(c6&0x80));
+    ESP_LOGI(TAG, "Status: C0=%02X C1=%02X C6=%02X  HPD=%d CLK=%d PLL=%d VMUTE=%d",
+             c0,c1,c6, !!(c1&0x80), !!(c1&0x40), !!(c6&0x80), !!(c6&0x02));
 }
 
 /* ------------------------------------------------------------------ *
@@ -680,6 +668,25 @@ void app_main(void)
     lt8912b_dds_config();
     lt8912b_rxlogicres();
     lt8912b_lvds_config();
+
+    /* Clear AV mute — some monitors see C6 bit1 (video mute) after init.
+     * The LT8912B sets AVMUTE in the HDMI GCP packet during init.
+     * Clear it by writing the AVMUTE clear command (0xC1 on CEC address). */
+    vTaskDelay(pdMS_TO_TICKS(100));
+    lt_write(s_dev_audio, 0x3C, 0x41);  /* re-enable AVI infoframe */
+    /* Read and clear C6 mute bit via soft-reset of HDMI TX */
+    {
+        uint8_t c6 = 0;
+        lt_read(s_dev_main, 0xC6, &c6);
+        if (c6 & 0x02) {
+            ESP_LOGW(TAG, "C6=0x%02x VMUTE activo — forzando clear", c6);
+            /* Toggle HDMI output to clear mute state */
+            lt_write(s_dev_main, 0x33, 0x0E);
+            lt_write(s_dev_main, 0xB2, 0x01);
+            lt8912b_rxlogicres();
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+    }
 
     vTaskDelay(pdMS_TO_TICKS(200));
     lt8912b_status();
