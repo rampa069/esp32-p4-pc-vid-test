@@ -2,6 +2,7 @@ sdkconfig
 *~
 build/
 managed_components/
+dependencies.lock
 backup/
 
 # Los test_apps tienen paths relativos que rompen builds externos
