@@ -15,10 +15,9 @@ dependencies:
 
   esp_lcd_ili9881c:
     version: ">=1.0.3,<2.0.0"
-    override_path: "../../components/lcd/esp_lcd_ili9881c"
+
   esp_lcd_touch_gt911:
     version: "^1"
-    override_path: "../../components/lcd_touch/esp_lcd_touch_gt911"
 
   espressif/esp_lvgl_port:
     version: "^2"
@@ -42,12 +41,3 @@ dependencies:
     public: true
     rules:
      - if: "idf_version >=6.0"
-
-examples:
-  - path: ../../examples/display
-  - path: ../../examples/display_rotation
-  - path: ../../examples/display_lvgl_demos
-  - path: ../../examples/display_lvgl_benchmark
-  - path: ../../examples/display_usb_hid
-  - path: ../../examples/display_sdcard
-  - path: ../../examples/display_camera_csi
