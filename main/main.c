@@ -180,10 +180,14 @@ static void edid_dump(const uint8_t *e)
  *  Ordered by preference (best first).                                *
  * ------------------------------------------------------------------ */
 static const video_timing_t k_cea_modes[] = {
-    /* VIC4:  1280x720@60Hz  pclk=74.25MHz */
+    /* VIC4:  1280x720@60Hz   pclk=74.25MHz — HDMI mandatory for TVs */
     { .hact=1280,.hs=40, .hfp=110,.hbp=220,.htotal=1650,
       .vact=720, .vs=5,  .vfp=5,  .vbp=20, .vtotal=750,
       .pclk_khz=74250, .vic=4,  .aspect_16_9=1 },
+    /* VESA 1024x768@60Hz  pclk=65MHz — universal for PC monitors */
+    { .hact=1024,.hs=136,.hfp=24, .hbp=160,.htotal=1344,
+      .vact=768, .vs=6,  .vfp=3,  .vbp=29, .vtotal=806,
+      .pclk_khz=65000, .vic=0,  .aspect_16_9=0 },
     /* VIC1:  640x480@60Hz   pclk=25.175MHz — universal fallback */
     { .hact=640, .hs=96,.hfp=16, .hbp=48, .htotal=800,
       .vact=480, .vs=2, .vfp=10, .vbp=33, .vtotal=525,
@@ -298,24 +302,35 @@ static void edid_select_mode(const uint8_t *e)
         ESP_LOGI(TAG, "  Range: V=%d-%dHz H=%d-%dKHz pclk_max=%dMHz",
                  vmin, vmax, hmin, hmax, pmax_10mhz*10);
 
+        /* If monitor explicitly declares 1024x768@60Hz in established timings,
+         * it is a PC monitor — prefer VESA 1024x768 over CEA 720p */
+        bool prefer_1024 = (e[36] & 0x08) != 0;
+        if (prefer_1024)
+            ESP_LOGI(TAG, "  Monitor declara 1024x768 — modo PC, priorizando VESA");
+
         for (size_t j = 0; j < NUM_CEA_MODES; j++) {
             const video_timing_t *m = &k_cea_modes[j];
+            /* Skip 720p (VIC4) if monitor prefers PC modes */
+            if (prefer_1024 && m->vic == 4) {
+                ESP_LOGI(TAG, "  Saltando VIC4 720p (monitor PC)");
+                continue;
+            }
             uint32_t pm = m->pclk_khz / 1000;
-            /* Check if mode fits the monitor's declared range */
             uint32_t htotal = m->htotal, vtotal = m->vtotal;
             uint32_t fps    = m->pclk_khz * 1000 / htotal / vtotal;
             uint32_t hrate  = m->pclk_khz / htotal; /* KHz */
             bool in_range = (!vmin || (fps >= vmin && fps <= vmax)) &&
                             (!hmin || (hrate >= (uint32_t)hmin && hrate <= (uint32_t)hmax)) &&
                             (!pmax_10mhz || pm <= (uint32_t)pmax_10mhz*10);
-            ESP_LOGI(TAG, "  CEA VIC%d %dx%d@%luHz H=%luKHz pclk=%luMHz — %s",
-                     m->vic, m->hact, m->vact, (unsigned long)fps,
+            ESP_LOGI(TAG, "  %s %dx%d@%luHz H=%luKHz pclk=%luMHz — %s",
+                     m->vic ? "CEA" : "VESA",
+                     m->hact, m->vact, (unsigned long)fps,
                      (unsigned long)hrate, (unsigned long)pm,
                      in_range ? "en rango" : "fuera de rango monitor");
             if (in_range) {
                 best = *m;
                 best_pixels = (uint32_t)m->hact * m->vact;
-                ESP_LOGI(TAG, "  -> Seleccionado CEA VIC%d", m->vic);
+                ESP_LOGI(TAG, "  -> Seleccionado %dx%d VIC%d", m->hact, m->vact, m->vic);
                 break;
             }
         }
