@@ -536,11 +536,15 @@ void app_main(void)
     }
 
     /* ---- DPI panel ---- */
-    ESP_LOGI(TAG, "DPI: %dx%d @ %luMHz", s_timing.hact, s_timing.vact, (unsigned long)pclk_mhz);
+    ESP_LOGI(TAG, "DPI: %dx%d @ %.3fMHz", s_timing.hact, s_timing.vact,
+             (float)s_timing.pclk_khz / 1000.0f);
     {
+        /* dpi_clock_freq_mhz is float — use exact KHz value for precision
+         * e.g. 74250KHz = 74.25MHz, avoids 0.3% error that causes flicker */
+        float dpi_clk_exact = (float)s_timing.pclk_khz / 1000.0f;
         esp_lcd_dpi_panel_config_t dpi_cfg = {
             .dpi_clk_src        = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
-            .dpi_clock_freq_mhz = (int)pclk_mhz,
+            .dpi_clock_freq_mhz = dpi_clk_exact,
             .pixel_format       = LCD_COLOR_PIXEL_FORMAT_RGB888,
             .num_fbs            = 2,
             .video_timing = {
