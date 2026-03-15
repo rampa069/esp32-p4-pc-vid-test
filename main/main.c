@@ -233,7 +233,8 @@ static void edid_select_mode(const uint8_t *e)
             best.vact=vact; best.vtotal=vact+vblnk;
             best.vs=vpw;    best.vfp=vfp; best.vbp=vbp;
             best.pclk_khz=pclk_khz;
-            best.aspect_16_9 = (d[14] & 0x02) ? 1 : 0;
+            /* Aspect from image size: width/height > 1.4 => 16:9 */
+        best.aspect_16_9 = (hact * 10 / (vact ? vact : 1) > 14) ? 1 : 0;
             best.vic = 0;  /* unknown CEA VIC for custom modes */
             ESP_LOGI(TAG, "  DTD[%d] %dx%d@%luMHz — candidato",
                      i, hact, vact, (unsigned long)pclk_mhz);
@@ -265,12 +266,12 @@ static void edid_select_mode(const uint8_t *e)
         s_timing = k_fallback;
     } else {
         s_timing = best;
-        /* Assign VIC for known modes */
-        if (s_timing.hact==640  && s_timing.vact==480)  s_timing.vic = 1;
-        if (s_timing.hact==720  && s_timing.vact==480)  s_timing.vic = 2;
-        if (s_timing.hact==1280 && s_timing.vact==720)  s_timing.vic = 4;
-        if (s_timing.hact==1920 && s_timing.vact==1080) s_timing.vic = 16;
-        if (s_timing.hact==800  && s_timing.vact==600)  s_timing.vic = 0;
+        /* Assign VIC and aspect for known CEA modes */
+        if (s_timing.hact==640  && s_timing.vact==480)  { s_timing.vic=1;  s_timing.aspect_16_9=0; }
+        if (s_timing.hact==720  && s_timing.vact==480)  { s_timing.vic=2;  s_timing.aspect_16_9=0; }
+        if (s_timing.hact==1280 && s_timing.vact==720)  { s_timing.vic=4;  s_timing.aspect_16_9=1; }
+        if (s_timing.hact==1920 && s_timing.vact==1080) { s_timing.vic=16; s_timing.aspect_16_9=1; }
+        if (s_timing.hact==800  && s_timing.vact==600)  { s_timing.vic=0;  s_timing.aspect_16_9=0; }
     }
 
     ESP_LOGI(TAG, "Modo seleccionado: %dx%d pclk=%luKHz htotal=%d vtotal=%d VIC=%d",
@@ -366,8 +367,13 @@ static esp_err_t lt8912b_dds_config(void)
     /* DDS freq word — from production SamCoupe for 24MHz pixel clock.
      * Formula: pclk_mhz * 0x16C16. For other clocks we use same base
      * table but override the frequency word. */
+    /* Use pclk in units of 0.25MHz for better precision:
+     * DDS = pclk_quarter * 0x16C16 / 4
+     * For 74.25MHz: quarter=297, dds = 297*0x16C16/4 = 0x6B1A63
+     * For 24MHz:    quarter=96,  dds = 96 *0x16C16/4 = 0x238E26 */
     uint32_t pclk_mhz = s_timing.pclk_khz / 1000;
-    uint32_t dds = pclk_mhz * 0x16C16u;
+    uint32_t pclk_q   = (s_timing.pclk_khz + 124) / 250;  /* round to nearest 0.25MHz */
+    uint32_t dds      = (pclk_q * 0x16C16u) / 4;
     ESP_LOGI(TAG, "DDS: pclk=%luMHz word=0x%06lX [0x%02X,0x%02X,0x%02X]",
              (unsigned long)pclk_mhz, (unsigned long)dds,
              (uint8_t)(dds&0xFF),(uint8_t)((dds>>8)&0xFF),(uint8_t)((dds>>16)&0xFF));
