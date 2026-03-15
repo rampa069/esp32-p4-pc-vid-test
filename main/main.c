@@ -525,12 +525,16 @@ void app_main(void)
 
     /* ---- DSI bus — lane rate from selected timing ---- */
     uint32_t pclk_mhz  = s_timing.pclk_khz / 1000;
-    /* lane_mbps = pclk * bpp / lanes, rounded up to nearest 50, min 400 */
-    uint32_t lane_mbps  = (pclk_mhz * 24 / 2);
+    /* lane_mbps = pclk_khz * bpp / lanes / 1000, with 1.3x overhead margin.
+     * SamCoupe production uses 400 Mbps for 24MHz (factor 1.33x).
+     * Too tight (1.01x) causes Vsync jitter (vtotal oscillating ±1 line). */
+    uint32_t lane_mbps = (uint32_t)(s_timing.pclk_khz * 24ULL / 2 / 1000);
+    lane_mbps = lane_mbps * 13 / 10;  /* 1.3x overhead */
     /* round up to multiple of 50, keep above 400 */
     lane_mbps = ((lane_mbps + 49) / 50) * 50;
     if (lane_mbps < 400) lane_mbps = 400;
-    ESP_LOGI(TAG, "DSI: pclk=%luMHz lane=%luMbps", (unsigned long)pclk_mhz, (unsigned long)lane_mbps);
+    ESP_LOGI(TAG, "DSI: pclk=%.3fMHz lane=%luMbps (1.3x margin)",
+             (float)s_timing.pclk_khz/1000.0f, (unsigned long)lane_mbps);
 
     {
         esp_lcd_dsi_bus_config_t bus_cfg = {
