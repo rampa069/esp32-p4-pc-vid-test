@@ -64,7 +64,10 @@ typedef struct {
 static const video_timing_t k_fallback = {
     .hact=640, .hs=96, .hfp=16, .hbp=48, .htotal=800,
     .vact=480, .vs=2,  .vfp=10, .vbp=33, .vtotal=525,
-    .pclk_khz=25175, .vic=1, .aspect_16_9=0,
+    /* 25MHz integer — ESP32-P4 DPI PLL generates exact 25MHz.
+     * 25.175 is the CEA spec but the PLL cannot hit it exactly.
+     * 25000 / (800*525) = 59.52 Hz — within monitor range. */
+    .pclk_khz=25000, .vic=1, .aspect_16_9=0,
 };
 
 static video_timing_t s_timing;  /* chosen timing */
