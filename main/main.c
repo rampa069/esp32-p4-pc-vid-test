@@ -34,7 +34,7 @@ static const char *TAG = "colorbars";
  *  lane_mbps = pclk_mhz * 24 / 2  =>  max pclk = 125 MHz             *
  *  PHY min lane rate ~80 Mbps  =>  min pclk ~ 7 MHz (use 20 as safe) *
  * ------------------------------------------------------------------ */
-#define PHY_MAX_PCLK_MHZ   62   /* conservative: 1500/24*2 = 125, use 62 */
+#define PHY_MAX_PCLK_MHZ   90   /* 90MHz * 24/2 = 1080 Mbps/lane, safe for rev v1.0 */
 #define PHY_MIN_PCLK_MHZ   20
 
 /* I2C */
